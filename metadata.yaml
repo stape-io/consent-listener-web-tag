@@ -1,5 +1,5 @@
 homepage: 'https://stape.io/'
 documentation: 'https://github.com/stape-io/consent-listener-web-tag'
 versions:
-  - sha: '[INITIAL RELEASE HASH]'
+  - sha: 'ea83cccae95b2f14699c6fc25b637b4425bf4722'
     changeNotes: Initial release.
