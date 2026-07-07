@@ -32,3 +32,6 @@ If your website uses a non-standard dataLayer namespace (e.g., `myCustomLayer`),
 ## Open Source
 
 The **Google Consent Mode Listener Tag for GTM** is developed and maintained by the [Stape Team](https://stape.io/) under the Apache 2.0 license.
+
+### GTM Gallery Status
+🔴 Not listed
