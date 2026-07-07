@@ -1,4 +1,4 @@
-# Google Consent Mode Listener Tag
+# Google Consent Mode Listener Tag for Google Tag Manager Web
 
 This utility template for Google Tag Manager (Web) listens for Google Consent Mode state transitions and pushes a standardized event to your dataLayer.
 
