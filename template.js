@@ -1,12 +1,12 @@
 const addConsentListener = require('addConsentListener');
+const callLater = require('callLater');
 const createQueue = require('createQueue');
 const getType = require('getType');
 const getUrl = require('getUrl');
+const isConsentGranted = require('isConsentGranted');
 
 /*==============================================================================
 ==============================================================================*/
-
-require('logToConsole')(data);
 
 if (shouldExitEarly(data)) return data.gtmOnSuccess();
 
@@ -40,16 +40,32 @@ function addConsentStatusListener(data, typesToListen) {
   const dataLayerName =
     data.useCustomDataLayer && data.customDataLayerName ? data.customDataLayerName : 'dataLayer';
   const dataLayerDispatcher = createQueue(dataLayerName);
-  const eventName =
-    data.useCustomEventName && data.customEventName ? data.customEventName : 'stape_consent_update';
+
+  let flushScheduled = false;
+  function flushConsentState() {
+    flushScheduled = false;
+
+    const consentState = {};
+    typesToListen.forEach((consentType) => {
+      consentState[consentType] = isConsentGranted(consentType) ? 'granted' : 'denied';
+    });
+
+    const eventName =
+      data.useCustomEventName && data.customEventName
+        ? data.customEventName
+        : 'stape_consent_update';
+
+    dataLayerDispatcher({
+      event: eventName,
+      consent: consentState
+    });
+  }
 
   typesToListen.forEach((consentType) => {
-    addConsentListener(consentType, (updatedType, granted) => {
-      dataLayerDispatcher({
-        event: eventName,
-        consent_type: consentType,
-        consent_status: granted ? 'granted' : 'denied'
-      });
+    addConsentListener(consentType, () => {
+      if (flushScheduled) return;
+      flushScheduled = true;
+      callLater(flushConsentState);
     });
   });
 }
@@ -66,8 +82,7 @@ function shouldExitEarly(data) {
   }
 
   const isConsentTableValidArray =
-    getType(data.specificConsentTypes) === 'array' &&
-    data.specificConsentTypes.length > 0;
+    getType(data.specificConsentTypes) === 'array' && data.specificConsentTypes.length > 0;
   if (data.monitoredConsentScope === 'specificTypes' && !isConsentTableValidArray) {
     return true;
   }
