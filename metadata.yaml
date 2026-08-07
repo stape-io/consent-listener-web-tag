@@ -1,5 +1,7 @@
 homepage: 'https://stape.io/'
 documentation: 'https://github.com/stape-io/consent-listener-web-tag'
 versions:
+  - sha: 88485db7a23a45a1560cbfa1d08d67a137efeff7
+    changeNotes: Changed the data layer event to a single aggregated consent event.
   - sha: 3717c1a6414c889107873b0a05d75129573d5598
     changeNotes: Initial release.
