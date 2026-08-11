@@ -22,7 +22,7 @@ ___INFO___
     "displayName": "stape.io",
     "thumbnail": "data:image/png;base64,iVBORw0KGgoAAAANSUhEUgAAABIAAAASCAYAAABWzo5XAAABYElEQVR4AZ1TAUQFQRBdhBBCCCGEECCE8IEAkCT1b8ftdrt7oYAQ+gQIAUIA+AgQAoQQAgSAACGEcDjUPHag27vu32McNzNv386bVf9hrywXiGheDcWhtSvahGtt3Jc2/iPL/SVRudybYJy7TW6cctQxpjr3D/z94ag47sbGb7QTHPsdVvCMBqiAGqiSPBXFurbhNpJxTXgk60cNIk4+cXxmxp1iLqoFB0WxpK2/wGHoaSFCohtEZ4tSP5iIZ7ULJZjjQCIh8TXmiKv3IsLedJHE+jf+f98gggucfI+yeW+K7TYSAMbAxQSRu4KtWLq4Bt9YwhTJkSnXUKtzZ5pu2LCFpNgvOyUkiUNr2bPUnF5xLcwIzdq6m78kUAznGvNJqULRaDKZSzxgUVoR+VXVhcyEcyET90SJXDezbl/1AZ4AGuAiO3MSZ1JhLnyQVrMA9nPjCwjlkcqrHwRYLe504RfU6/XwKT3D8gAAAABJRU5ErkJggg\u003d\u003d"
   },
-  "description": "This tag listens to updates in Google Mode Consent types and pushes it to the dataLayer or a custom named dataLayer.",
+  "description": "This tag listens to updates in Google Consent Mode types and pushes a single event containing the state of all monitored consent types to the dataLayer or a custom named dataLayer.",
   "containerContexts": [
     "WEB"
   ]
@@ -191,14 +191,14 @@ ___TEMPLATE_PARAMETERS___
 ___SANDBOXED_JS_FOR_WEB_TEMPLATE___
 
 const addConsentListener = require('addConsentListener');
+const callLater = require('callLater');
 const createQueue = require('createQueue');
 const getType = require('getType');
 const getUrl = require('getUrl');
+const isConsentGranted = require('isConsentGranted');
 
 /*==============================================================================
 ==============================================================================*/
-
-require('logToConsole')(data);
 
 if (shouldExitEarly(data)) return data.gtmOnSuccess();
 
@@ -232,16 +232,32 @@ function addConsentStatusListener(data, typesToListen) {
   const dataLayerName =
     data.useCustomDataLayer && data.customDataLayerName ? data.customDataLayerName : 'dataLayer';
   const dataLayerDispatcher = createQueue(dataLayerName);
-  const eventName =
-    data.useCustomEventName && data.customEventName ? data.customEventName : 'stape_consent_update';
+
+  let flushScheduled = false;
+  function flushConsentState() {
+    flushScheduled = false;
+
+    const consentState = {};
+    typesToListen.forEach((consentType) => {
+      consentState[consentType] = isConsentGranted(consentType) ? 'granted' : 'denied';
+    });
+
+    const eventName =
+      data.useCustomEventName && data.customEventName
+        ? data.customEventName
+        : 'stape_consent_update';
+
+    dataLayerDispatcher({
+      event: eventName,
+      consent: consentState
+    });
+  }
 
   typesToListen.forEach((consentType) => {
-    addConsentListener(consentType, (updatedType, granted) => {
-      dataLayerDispatcher({
-        event: eventName,
-        consent_type: consentType,
-        consent_status: granted ? 'granted' : 'denied'
-      });
+    addConsentListener(consentType, () => {
+      if (flushScheduled) return;
+      flushScheduled = true;
+      callLater(flushConsentState);
     });
   });
 }
@@ -258,8 +274,7 @@ function shouldExitEarly(data) {
   }
 
   const isConsentTableValidArray =
-    getType(data.specificConsentTypes) === 'array' &&
-    data.specificConsentTypes.length > 0;
+    getType(data.specificConsentTypes) === 'array' && data.specificConsentTypes.length > 0;
   if (data.monitoredConsentScope === 'specificTypes' && !isConsentTableValidArray) {
     return true;
   }
@@ -598,24 +613,6 @@ ___WEB_PERMISSIONS___
       "isEditedByUser": true
     },
     "isRequired": true
-  },
-  {
-    "instance": {
-      "key": {
-        "publicId": "logging",
-        "versionId": "1"
-      },
-      "param": [
-        {
-          "key": "environments",
-          "value": {
-            "type": 1,
-            "string": "debug"
-          }
-        }
-      ]
-    },
-    "isRequired": true
   }
 ]
 
@@ -623,12 +620,285 @@ ___WEB_PERMISSIONS___
 ___TESTS___
 
 scenarios:
-- name: Quick Test
-  code: runCode();
-setup: ''
+- name: '[Early Exit] Preview server URL does not register any consent listener'
+  code: |-
+    mock('getUrl', () => 'https://gtm-msr.appspot.com/preview');
+
+    runCode(createMockData());
+
+    assertApi('addConsentListener').wasNotCalled();
+    assertApi('gtmOnSuccess').wasCalled();
+    assertApi('gtmOnFailure').wasNotCalled();
+- name: '[Early Exit] Specific types selected with an empty table exits early'
+  code: |-
+    const mockData = createMockData({
+      monitoredConsentScope: 'specificTypes',
+      specificConsentTypes: []
+    });
+
+    runCode(mockData);
+
+    assertApi('addConsentListener').wasNotCalled();
+    assertApi('gtmOnSuccess').wasCalled();
+    assertApi('gtmOnFailure').wasNotCalled();
+- name: '[Early Exit] Specific types selected without a table exits early'
+  code: |-
+    const mockData = createMockData({
+      monitoredConsentScope: 'specificTypes',
+      specificConsentTypes: undefined
+    });
+
+    runCode(mockData);
+
+    assertApi('addConsentListener').wasNotCalled();
+    assertApi('gtmOnSuccess').wasCalled();
+    assertApi('gtmOnFailure').wasNotCalled();
+- name: '[Consent Types] Listens to all 7 consent types when All Types is selected'
+  code: |-
+    const registeredTypes = [];
+    mock('addConsentListener', (consentType) => {
+      registeredTypes.push(consentType);
+    });
+
+    runCode(createMockData({ monitoredConsentScope: 'allTypes' }));
+
+    assertThat(registeredTypes).containsExactly(
+      'ad_storage',
+      'ad_user_data',
+      'ad_personalization',
+      'analytics_storage',
+      'functionality_storage',
+      'personalization_storage',
+      'security_storage'
+    );
+    assertApi('gtmOnSuccess').wasCalled();
+    assertApi('gtmOnFailure').wasNotCalled();
+- name: '[Consent Types] Only listens to the selected types when Specific Types is
+    chosen'
+  code: |-
+    const registeredTypes = [];
+    mock('addConsentListener', (consentType) => {
+      registeredTypes.push(consentType);
+    });
+
+    const mockData = createMockData({
+      monitoredConsentScope: 'specificTypes',
+      specificConsentTypes: [
+        { consentType: 'ad_storage' },
+        { consentType: 'analytics_storage' }
+      ]
+    });
+
+    runCode(mockData);
+
+    assertThat(registeredTypes).containsExactly('ad_storage', 'analytics_storage');
+    assertApi('gtmOnSuccess').wasCalled();
+    assertApi('gtmOnFailure').wasNotCalled();
+- name: '[Data Layer] Pushes to the default dataLayer with the default event name'
+  code: |-
+    const consentListeners = {};
+    const pushedEvents = [];
+    let scheduledFlush;
+
+    mock('addConsentListener', (consentType, listener) => {
+      consentListeners[consentType] = listener;
+    });
+    mock('isConsentGranted', () => false);
+    mock('callLater', (fn) => {
+      scheduledFlush = fn;
+    });
+    mock('createQueue', () => (obj) => {
+      pushedEvents.push(obj);
+    });
+
+    runCode(createMockData());
+
+    consentListeners.ad_storage('ad_storage', true);
+    scheduledFlush();
+
+    assertApi('createQueue').wasCalledWith('dataLayer');
+    assertThat(pushedEvents).hasLength(1);
+    assertThat(pushedEvents[0].event).isEqualTo('stape_consent_update');
+    assertApi('gtmOnSuccess').wasCalled();
+    assertApi('gtmOnFailure').wasNotCalled();
+- name: '[Data Layer] Uses the custom event name when configured'
+  code: |-
+    const consentListeners = {};
+    const pushedEvents = [];
+    let scheduledFlush;
+
+    mock('addConsentListener', (consentType, listener) => {
+      consentListeners[consentType] = listener;
+    });
+    mock('isConsentGranted', () => false);
+    mock('callLater', (fn) => {
+      scheduledFlush = fn;
+    });
+    mock('createQueue', () => (obj) => {
+      pushedEvents.push(obj);
+    });
+
+    const mockData = createMockData({
+      useCustomEventName: true,
+      customEventName: 'my_custom_consent_event'
+    });
+
+    runCode(mockData);
+
+    consentListeners.ad_storage('ad_storage', true);
+    scheduledFlush();
+
+    assertThat(pushedEvents[0].event).isEqualTo('my_custom_consent_event');
+    assertApi('gtmOnSuccess').wasCalled();
+    assertApi('gtmOnFailure').wasNotCalled();
+- name: '[Data Layer] Uses the custom dataLayer name when configured'
+  code: |-
+    const mockData = createMockData({
+      useCustomDataLayer: true,
+      customDataLayerName: 'myCustomDataLayer'
+    });
+
+    runCode(mockData);
+
+    assertApi('createQueue').wasCalledWith('myCustomDataLayer');
+    assertApi('gtmOnSuccess').wasCalled();
+    assertApi('gtmOnFailure').wasNotCalled();
+- name: '[Debounce] Multiple consent type changes in the same tick produce a single
+    push'
+  code: |-
+    const consentListeners = {};
+    const consentState = {
+      ad_storage: false,
+      ad_user_data: false,
+      ad_personalization: false,
+      analytics_storage: false,
+      functionality_storage: false,
+      personalization_storage: false,
+      security_storage: false
+    };
+    const pushedEvents = [];
+    let scheduledFlush;
+    let callLaterCallCount = 0;
+
+    mock('addConsentListener', (consentType, listener) => {
+      consentListeners[consentType] = listener;
+    });
+    mock('isConsentGranted', (consentType) => consentState[consentType]);
+    mock('callLater', (fn) => {
+      callLaterCallCount++;
+      scheduledFlush = fn;
+    });
+    mock('createQueue', () => (obj) => {
+      pushedEvents.push(obj);
+    });
+
+    runCode(createMockData({ monitoredConsentScope: 'allTypes' }));
+
+    // Simulate a banner "accept all" click updating several consent types
+    // within the same tick.
+    consentState.ad_storage = true;
+    consentListeners.ad_storage('ad_storage', true);
+    consentState.analytics_storage = true;
+    consentListeners.analytics_storage('analytics_storage', true);
+    consentState.functionality_storage = true;
+    consentListeners.functionality_storage('functionality_storage', true);
+
+    assertThat(callLaterCallCount).isEqualTo(1);
+    assertThat(pushedEvents).isEmpty();
+
+    scheduledFlush();
+
+    assertThat(pushedEvents).hasLength(1);
+    assertThat(pushedEvents[0].consent).isEqualTo({
+      ad_storage: 'granted',
+      ad_user_data: 'denied',
+      ad_personalization: 'denied',
+      analytics_storage: 'granted',
+      functionality_storage: 'granted',
+      personalization_storage: 'denied',
+      security_storage: 'denied'
+    });
+    assertApi('gtmOnSuccess').wasCalled();
+    assertApi('gtmOnFailure').wasNotCalled();
+- name: '[Debounce] A new update after a flush schedules a new push'
+  code: |-
+    const consentListeners = {};
+    const consentState = {
+      ad_storage: false,
+      ad_user_data: false,
+      ad_personalization: false,
+      analytics_storage: false,
+      functionality_storage: false,
+      personalization_storage: false,
+      security_storage: false
+    };
+    const pushedEvents = [];
+    const scheduledFlushes = [];
+
+    mock('addConsentListener', (consentType, listener) => {
+      consentListeners[consentType] = listener;
+    });
+    mock('isConsentGranted', (consentType) => consentState[consentType]);
+    mock('callLater', (fn) => {
+      scheduledFlushes.push(fn);
+    });
+    mock('createQueue', () => (obj) => {
+      pushedEvents.push(obj);
+    });
+
+    runCode(createMockData({ monitoredConsentScope: 'allTypes' }));
+
+    consentState.ad_storage = true;
+    consentListeners.ad_storage('ad_storage', true);
+    scheduledFlushes[0]();
+
+    consentState.analytics_storage = true;
+    consentListeners.analytics_storage('analytics_storage', true);
+    scheduledFlushes[1]();
+
+    assertThat(scheduledFlushes).hasLength(2);
+    assertThat(pushedEvents).hasLength(2);
+    assertThat(pushedEvents[0].consent.ad_storage).isEqualTo('granted');
+    assertThat(pushedEvents[1].consent.analytics_storage).isEqualTo('granted');
+    assertApi('gtmOnSuccess').wasCalled();
+    assertApi('gtmOnFailure').wasNotCalled();
+setup: |-
+  const assign = (target, source) => {
+    for (const key in source) {
+      if (source.hasOwnProperty(key)) target[key] = source[key];
+    }
+    return target;
+  };
+
+  const baseMockData = {
+    monitoredConsentScope: 'allTypes',
+    specificConsentTypes: [],
+    useCustomEventName: false,
+    customEventName: undefined,
+    useCustomDataLayer: false,
+    customDataLayerName: undefined
+  };
+
+  const createMockData = (overrides) => {
+    return assign(assign({}, baseMockData), overrides || {});
+  };
+
+  // Sensible defaults so tests that don't care about a given API still run
+  // without hitting the early-exit path or touching the real window/globals.
+  mock('getUrl', () => 'https://example.com/');
+  mock('isConsentGranted', () => false);
+  mock('addConsentListener', () => {});
+  mock('callLater', () => {});
+  mock('createQueue', () => () => {});
 
 
 ___NOTES___
+
+2026-08-07 - Change Notes:
+  - Push a single aggregated event containing the state of every monitored consent type (e.g. {ad_storage: 'granted', analytics_storage: 'denied'}) instead of one event per type, so consumers get a complete consent snapshot in one dataLayer push; consent updates arriving in the same tick are coalesced via callLater and the payload is rebuilt from isConsentGranted so it is always current
+  - Remove the debug logToConsole call and its now-unused logging permission, so the tag no longer writes the tag configuration to the browser console
+  - Add a unit test suite covering early exits, consent type selection, custom event/dataLayer names, and the single-push debounce behaviour, replacing the empty placeholder test
+  - Update the gallery description to reflect the single aggregated event and correct the transposed "Google Mode Consent" wording
 
 Created on 06/07/2026, 06:29:16
 
